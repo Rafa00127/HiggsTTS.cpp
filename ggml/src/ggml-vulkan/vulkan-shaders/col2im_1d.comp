@@ -1,0 +1,51 @@
+#version 450
+
+#include "types.glsl"
+
+// col2im_1d: gather GEMM columns into a 1D signal (GH #155).
+// src0 col: [K_OC, T_in]   dst: [T_out, OC]   (one thread per output element)
+
+layout (binding = 0) readonly  buffer A {A_TYPE data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_d[];};
+
+layout (push_constant) uniform parameter {
+    uint T_in;
+    uint T_out;
+    uint OC;
+    uint K;
+    uint K_OC;
+    int  s0;
+    int  p0;
+    uint total;
+} p;
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    const uint idx = gl_GlobalInvocationID.x;
+    if (idx >= p.total) {
+        return;
+    }
+
+    const uint t_out = idx % p.T_out;
+    const uint oc    = idx / p.T_out;
+    const int  t_abs = int(t_out) + p.p0;  // absolute position in uncropped signal
+
+    // Gather: all (t_in, k) with t_in*s0 + k == t_abs, 0 <= k < K.
+    int t_in_min = (t_abs - int(p.K) + p.s0) / p.s0;
+    if (t_in_min < 0) {
+        t_in_min = 0;
+    }
+    int t_in_max = t_abs / p.s0;
+    if (t_in_max >= int(p.T_in)) {
+        t_in_max = int(p.T_in) - 1;
+    }
+
+    float sum = 0.0;
+    for (int t_in = t_in_min; t_in <= t_in_max; t_in++) {
+        const int k = t_abs - t_in * p.s0;  // 0 <= k < K within range
+        // col layout [K_OC, T_in]: column index = oc*K + k
+        sum += float(data_a[(oc * p.K + uint(k)) + uint(t_in) * p.K_OC]);
+    }
+    data_d[idx] = D_TYPE(sum);
+}

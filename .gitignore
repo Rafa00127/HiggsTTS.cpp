@@ -1,0 +1,27 @@
+# build
+build/
+build-*/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# models (too large)
+*.gguf
+
+# cmake
+CMakeCache.txt
+CMakeFiles/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# agent
+.crush/
+AGENTS.md
+CLAUDE.md
+
+# build bat
+*.bat
