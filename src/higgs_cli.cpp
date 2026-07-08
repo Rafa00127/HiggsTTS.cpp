@@ -6,6 +6,7 @@
 #include "higgs_decode.h"
 #include "higgs_BAR.h"
 #include "core/bpe.h"
+#include "core/hf_tokenizer.h"
 #include "core/audio_resample.h"
 
 #include "ggml.h"
@@ -15,6 +16,7 @@
 #include "dr_wav.h"
 
 #ifdef _WIN32
+#define NOMINMAX
 #include <windows.h>
 #include <shellapi.h>
 #endif
@@ -112,12 +114,15 @@ int main(int argc, char** argv) {
     const char* text       = "I want a hero: an uncommon want";
     const char* ref_text   = nullptr;
     const char* out_wav    = "output.wav";
+    const char* tok_path   = nullptr;   // optional tokenizer.json
     float temperature      = 0.9f;
     int seed               = 42;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--model") && i + 1 < argc)
             model_path = argv[++i];
+        else if (!strcmp(argv[i], "--tokenizer") && i + 1 < argc)
+            tok_path = argv[++i];
         else if (!strcmp(argv[i], "--ref-wav") && i + 1 < argc)
             ref_wav = argv[++i];
         else if (!strcmp(argv[i], "--text") && i + 1 < argc)
@@ -157,14 +162,32 @@ int main(int argc, char** argv) {
     printf("Prefill: %d frames × %d codebooks\n", T_frames, N);
 
     // ── Step 2: Build prompt ─────────────────────────────────────────────────
-    std::vector<int32_t> target_tokens = core_bpe::tokenize_simple(m.token_to_id, m.merge_rank, text);
+    HFTokenizer hf_tok;
+    if (tok_path && hf_tok.load(tok_path))
+        printf("HF tokenizer loaded: %s\n", tok_path);
+
+    auto tokenize = [&](const char* t) -> std::vector<int32_t> {
+        if (tok_path) return hf_tok.encode(t);
+        return core_bpe::tokenize_simple(m.token_to_id, m.merge_rank, t);
+    };
+    std::vector<int32_t> target_tokens = tokenize(text);
     std::vector<int32_t> ref_text_tokens;
-    if (ref_text)
-        ref_text_tokens = core_bpe::tokenize_simple(m.token_to_id, m.merge_rank, ref_text);
+    if (ref_text) ref_text_tokens = tokenize(ref_text);
 
     int L_audio = T_frames + N - 1;
     auto prompt_ids = higgs_build_prompt(&m, target_tokens, ref_text_tokens, L_audio, true);
-    printf("Prompt: %zu tokens, L_audio=%d\n", prompt_ids.size(), L_audio);
+    int neg100_count = 0;
+    for (int pid : prompt_ids) if (pid == -100) neg100_count++;
+    printf("prompt_ids: %zu tokens, -100 count: %d\n", prompt_ids.size(), neg100_count);
+    printf("prompt_ids[:20]: [");
+    for (int i = 0; i < std::min(20, (int)prompt_ids.size()); i++)
+        printf("%s%d", i ? ", " : "", prompt_ids[i]);
+    printf("]\n");
+    printf("prompt_ids[-10:]: [");
+    for (int i = std::max(0, (int)prompt_ids.size() - 10); i < (int)prompt_ids.size(); i++)
+        printf("%s%d", i == (int)prompt_ids.size() - 10 ? "" : ", ", prompt_ids[i]);
+    printf("]\n");
+
 
     // ── Step 3: Backbone AR ──────────────────────────────────────────────────
     printf("Running backbone AR (temperature=%.2f, seed=%d)...\n", temperature, seed);

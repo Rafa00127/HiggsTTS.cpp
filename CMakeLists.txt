@@ -17,6 +17,7 @@ endif()
 add_library(higgs_core STATIC
     src/core/audio_resample.cpp
     src/core/gguf_loader.cpp
+    src/core/hf_tokenizer.cpp
 )
 target_include_directories(higgs_core PUBLIC src src/core ggml/src)
 target_compile_features(higgs_core PUBLIC cxx_std_17)

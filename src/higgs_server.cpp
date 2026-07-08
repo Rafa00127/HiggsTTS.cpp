@@ -8,6 +8,7 @@
 #include "higgs_decode.h"
 #include "higgs_BAR.h"
 #include "core/bpe.h"
+#include "core/hf_tokenizer.h"
 #include "core/audio_resample.h"
 
 #define DR_WAV_IMPLEMENTATION
@@ -47,6 +48,8 @@ static const char*  g_ref_text      = nullptr;
 static float        g_temperature   = 0.9f;
 static int          g_seed          = 42;
 static int          g_port          = 9989;
+static const char*  g_tokenizer     = nullptr;
+static HFTokenizer  g_hf_tok;
 
 // ── globals ─────────────────────────────────────────────────────────────────
 static higgs_test_model            g_model;
@@ -127,7 +130,8 @@ static bool prepare_prefill() {
 
     // Tokenize reference text (for prompt building)
     if (g_ref_text) {
-        g_ref_text_tokens = core_bpe::tokenize_simple(g_model.token_to_id, g_model.merge_rank, g_ref_text);
+        g_ref_text_tokens = g_tokenizer ? g_hf_tok.encode(g_ref_text)
+            : core_bpe::tokenize_simple(g_model.token_to_id, g_model.merge_rank, g_ref_text);
         fprintf(stderr, "[higgs_server] ref text: %zu tokens\n", g_ref_text_tokens.size());
     }
 
@@ -141,7 +145,8 @@ static bool synth_one(const char* text, float temperature, std::vector<float>& p
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // Tokenize target text
-    auto target_tokens = core_bpe::tokenize_simple(g_model.token_to_id, g_model.merge_rank, text);
+    auto target_tokens = g_tokenizer ? g_hf_tok.encode(text)
+        : core_bpe::tokenize_simple(g_model.token_to_id, g_model.merge_rank, text);
 
     // Build prompt with this target text
     int L_audio = g_T_frames + 7;  // T + N - 1, N=8
@@ -279,6 +284,8 @@ int main(int argc, char** argv) {
             g_ref_text = argv[++i];
         else if (!strcmp(argv[i], "--temperature") && i + 1 < argc)
             g_temperature = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--tokenizer") && i + 1 < argc)
+            g_tokenizer = argv[++i];
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc)
             g_seed = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--port") && i + 1 < argc)
@@ -291,6 +298,8 @@ int main(int argc, char** argv) {
 
     fprintf(stderr, "[higgs_server] loading...\n");
     if (!load_model()) return 1;
+    if (g_tokenizer && g_hf_tok.load(g_tokenizer))
+        fprintf(stderr, "[higgs_server] HF tokenizer loaded: %s\n", g_tokenizer);
     if (!prepare_prefill()) return 1;
     fprintf(stderr, "[higgs_server] ready. ref codes cached (%d frames).\n", g_T_frames);
 
