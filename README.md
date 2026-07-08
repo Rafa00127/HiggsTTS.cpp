@@ -18,7 +18,7 @@ Output: `build/bin/higgs_cli.exe`, `higgs_server.exe`, `higgs_quantize.exe`
 
 Download GGUF from [NeemaShioSe/HiggsTTS3.gguf](https://huggingface.co/NeemaShioSe/HiggsTTS3.gguf).
 
-or you can convert the model yourself, see [here](.\convert_model)
+or you can convert the model yourself, see [here](convert_model)
 
 ## Usage
 
