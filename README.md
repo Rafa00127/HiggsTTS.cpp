@@ -37,6 +37,21 @@ higgs_server --model model.gguf --ref-wav ref.wav --ref-text "reference transcri
 ```
 
 `--tokenizer` is optional. It enables recognition of special emotion / style / prosody tags
-(e.g. `<|emotion:elation|>`, `<|style:whispering|>`, `<|prosody:speed_fast|>`)
+(e.g. `<|style:whispering|>`)
 when they appear in the prompt text. Without it, the model falls back to the built-in
 GGUF BPE tokenizer.
+
+### Special Token Reference
+
+See [PROMPTING.md](https://huggingface.co/bosonai/higgs-tts-3-4b/blob/main/PROMPTING.md) for full details.
+
+| Category | Examples |
+|----------|----------|
+| Emotion (21) | `emotion:elation` `emotion:anger` `emotion:sadness` `emotion:fear` ... |
+| Style (3) | `style:singing` `style:shouting` `style:whispering` |
+| SFX (9) | `sfx:laughter` `sfx:cough` `sfx:sigh` `sfx:sneeze` ... |
+| Prosody (10) | `prosody:speed_slow` `prosody:pitch_high` `prosody:pause` ... |
+
+Tags are used as `<|category:name|>` in the prompt, e.g. `<|emotion:elation|> Hello world!`
+
+Prepend a tag to your text to control delivery: `<|emotion:elation|> Hello world!`
