@@ -173,9 +173,10 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
     auto delayed = higgs_apply_delay_pattern(codes, T_frames, N);
     int L_audio = T_frames + N - 1;
     int L = L_prompt;
+    int max_steps = 500;
 
     // ── Allocate KV cache ───────────────────────────────────────────────────
-    int max_ctx = 2048;
+    int max_ctx = L_prompt + max_steps + 10;
     ggml_init_params kv_ip = { ggml_tensor_overhead() * 2, nullptr, true };
     ggml_context* kv_ctx = ggml_init(kv_ip);
     ggml_tensor* kv_k = ggml_new_tensor_4d(kv_ctx, GGML_TYPE_F16, hd, max_ctx, nkv_h, 36);
@@ -276,7 +277,6 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
 
     // ── AR Decode Loop ──────────────────────────────────────────────────────
     int n_past = L;
-    int max_steps = 300;
     int delay_count = 0;
     int eoc_countdown = -1;
     std::vector<std::vector<int32_t>> all_codes;
