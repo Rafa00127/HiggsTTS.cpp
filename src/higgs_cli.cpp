@@ -155,14 +155,17 @@ int main(int argc, char** argv) {
     if (!read_wav_mono_24k(ref_wav, wav_samples)) { higgs_test_free(&m); return 1; }
     printf("Ref WAV: %zu samples @ 24kHz\n", wav_samples.size());
 
+    auto t_prefill_start = std::chrono::high_resolution_clock::now();
     std::vector<int32_t> codes;
     int T_frames = 0;
     if (!higgs_prefill_encode(&m, wav_samples.data(), (int)wav_samples.size(), codes, T_frames)) {
         fprintf(stderr, "Prefill encode failed\n");
         higgs_test_free(&m); return 1;
     }
+    auto t_prefill_end = std::chrono::high_resolution_clock::now();
+    double prefill_ms = std::chrono::duration<double, std::milli>(t_prefill_end - t_prefill_start).count();
     int N = 8;
-    printf("Prefill: %d frames × %d codebooks\n", T_frames, N);
+    printf("Prefill: %d frames × %d codebooks (%.0f ms)\n", T_frames, N, prefill_ms);
 
     // ── Step 2: Build prompt ─────────────────────────────────────────────────
     HFTokenizer hf_tok;
@@ -229,11 +232,12 @@ int main(int argc, char** argv) {
     }
 
     printf("\n=== Timing ===\n");
+    printf("Prefill:     %8.0f ms\n", prefill_ms);
     printf("Backbone AR: %8.0f ms\n", ar_ms);
     printf("Decode:      %8.0f ms\n", dec_ms);
-    printf("Total gen:   %8.0f ms\n", ar_ms + dec_ms);
+    printf("Total:       %8.0f ms\n", prefill_ms + ar_ms + dec_ms);
     printf("Audio:       %8.2f sec\n", audio_sec);
-    printf("RTF:         %8.3f x\n", (ar_ms + dec_ms) / 1000.0 / audio_sec);
+    printf("RTF:         %8.3f x\n", (prefill_ms + ar_ms + dec_ms) / 1000.0 / audio_sec);
 
     printf("\nSaved: %s\n", out_wav);
     higgs_test_free(&m);
