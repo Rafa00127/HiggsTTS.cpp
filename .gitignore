@@ -31,3 +31,12 @@ test_area
 
 #config file for test
 usage_example/*.json
+
+*.wav
+
+# dotnet build outputs
+**/bin/
+**/obj/
+*.user
+*.suo
+dotnet/

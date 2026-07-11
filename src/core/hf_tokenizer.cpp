@@ -86,9 +86,13 @@ static uint32_t decode_utf8_cp(const std::string & ch) {
     return cp;
 }
 
-// Check if a code point is CJK / fullwidth punctuation (not a letter).
-static bool cp_is_cjk_punct(uint32_t cp) {
-    return (cp >= 0x3000 && cp <= 0x303F)   // CJK Symbols and Punctuation
+// Check if a code point is punctuation (not a letter).
+// All ranges listed here are excluded from "letter" classification so they
+// get split into their own pre-tokens in the GPT-2 ByteLevel pre-tokenizer.
+static bool cp_is_punct(uint32_t cp) {
+    return (cp >= 0x00A0 && cp <= 0x00BF)   // Latin-1 Supplement: NBSP, ¡, ¢…¿, · (middle dot)
+        || (cp >= 0x2000 && cp <= 0x206F)   // General Punctuation: "" '' — – … ‹› †‡• etc.
+        || (cp >= 0x3000 && cp <= 0x303F)   // CJK Symbols and Punctuation: 。、「」【】
         || (cp >= 0xFF01 && cp <= 0xFF0F)   // Fullwidth !../
         || (cp >= 0xFF1A && cp <= 0xFF20)   // Fullwidth :..@
         || (cp >= 0xFF3B && cp <= 0xFF40)   // Fullwidth [..`
@@ -101,8 +105,8 @@ static bool pch_is_letter(const std::string & ch) {
         unsigned char c = (unsigned char)ch[0];
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
     }
-    // multi-byte UTF-8: exclude CJK punctuation ranges, treat rest as letter
-    return !cp_is_cjk_punct(decode_utf8_cp(ch));
+    // multi-byte UTF-8: exclude punctuation ranges, treat rest as letter
+    return !cp_is_punct(decode_utf8_cp(ch));
 }
 
 static bool pch_is_digit(const std::string & ch) {
