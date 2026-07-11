@@ -256,7 +256,7 @@ namespace HiggsTTSGUI
         private void BrowseRefWav(object sender, RoutedEventArgs e)
         {
             var dlg = new Microsoft.Win32.OpenFileDialog
-            { Filter = "WAV files (*.wav)|*.wav|All files (*.*)|*.*" };
+            { Filter = "Audio files (*.wav;*.mp3;*.flac;*.ogg)|*.wav;*.mp3;*.flac;*.ogg|All files (*.*)|*.*" };
             if (dlg.ShowDialog() == true) TxtRefWav.Text = dlg.FileName;
         }
 
@@ -389,7 +389,7 @@ namespace HiggsTTSGUI
                         Dispatcher.Invoke(() =>
                             LblStatus.Text = "Encoding reference audio...");
 
-                        var refAudio = ReadWavMonoFloat(refWav);
+                        var refAudio = ReadAudioMonoFloat(refWav);
                         refCodes = _tts!.EncodeRef(refAudio);
                         _cachedRefCodes = refCodes;
                         _cachedRefWav = refWav;
@@ -584,85 +584,67 @@ namespace HiggsTTSGUI
 
         // ── WAV helpers ───────────────────────────────────────────────────
 
-        private static float[] ReadWavMonoFloat(string path)
+        private static float[] ReadAudioMonoFloat(string path)
         {
-            using var fs = File.OpenRead(path);
-            using var br = new BinaryReader(fs);
+            var ext = Path.GetExtension(path).ToLowerInvariant();
 
-            // RIFF header
-            br.ReadChars(4); // "RIFF"
-            br.ReadInt32();  // file size - 8
-            br.ReadChars(4); // "WAVE"
+            // OGG → pipe through ffmpeg to raw 16-bit PCM at 24kHz mono
+            if (ext == ".ogg")
+                return ReadViaFfmpeg(path);
 
-            short bitsPerSample = 16;
-            short numChannels = 1;
-            int sampleRate = 24000;
-            int dataSize = 0;
+            using var reader = new AudioFileReader(path);
+            ISampleProvider source = reader;
+            if (reader.WaveFormat.Channels > 1)
+                source = new StereoToMonoSampleProvider(source) { LeftVolume = 0.5f, RightVolume = 0.5f };
 
-            // Find fmt and data chunks
-            while (fs.Position < fs.Length)
+            if (reader.WaveFormat.SampleRate != 24000)
             {
-                var chunkId = new string(br.ReadChars(4));
-                var chunkSize = br.ReadInt32();
-
-                if (chunkId == "fmt ")
-                {
-                    br.ReadInt16(); // audio format (1=PCM)
-                    numChannels = br.ReadInt16();
-                    sampleRate = br.ReadInt32();
-                    br.ReadInt32(); // byte rate
-                    br.ReadInt16(); // block align
-                    bitsPerSample = br.ReadInt16();
-                    if (chunkSize > 16) br.ReadBytes(chunkSize - 16);
-                }
-                else if (chunkId == "data")
-                {
-                    dataSize = chunkSize;
-                    break;
-                }
-                else
-                {
-                    br.ReadBytes(chunkSize);
-                }
+                var resampler = new MediaFoundationResampler(reader,
+                    new WaveFormat(24000, 1));
+                source = resampler.ToSampleProvider();
             }
 
-            int bytesPerSample = bitsPerSample / 8;
-            int totalSamples = dataSize / bytesPerSample;
-            var samples = new float[totalSamples / numChannels];
-
-            for (int i = 0; i < samples.Length; i++)
+            var list = new List<float>();
+            var buf = new float[4096];
+            int n;
+            while ((n = source.Read(buf, 0, buf.Length)) > 0)
             {
-                float sum = 0;
-                for (int ch = 0; ch < numChannels; ch++)
-                {
-                    float v = bitsPerSample == 16
-                        ? br.ReadInt16() / 32768f
-                        : br.ReadByte() / 128f - 1f;
-                    sum += v;
-                }
-                samples[i] = sum / numChannels;
+                for (int i = 0; i < n; i++)
+                    list.Add(buf[i]);
             }
-
-            // Resample to 24kHz if needed
-            if (sampleRate != 24000)
-                samples = ResampleLinear(samples, sampleRate, 24000);
-
-            return samples;
+            return list.ToArray();
         }
 
-        private static float[] ResampleLinear(float[] src, int srcRate, int dstRate)
+        private static float[] ReadViaFfmpeg(string path)
         {
-            double ratio = (double)dstRate / srcRate;
-            var dst = new float[(int)(src.Length * ratio)];
-            for (int i = 0; i < dst.Length; i++)
+            using var proc = new Process
             {
-                double srcIdx = i / ratio;
-                int idx0 = (int)srcIdx;
-                int idx1 = Math.Min(idx0 + 1, src.Length - 1);
-                double frac = srcIdx - idx0;
-                dst[i] = (float)(src[idx0] * (1 - frac) + src[idx1] * frac);
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "ffmpeg",
+                    Arguments = $"-i \"{path}\" -f s16le -ac 1 -ar 24000 -loglevel quiet pipe:1",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                }
+            };
+            proc.Start();
+
+            var raw = new List<byte>();
+            var buf = new byte[8192];
+            int n;
+            while ((n = proc.StandardOutput.BaseStream.Read(buf, 0, buf.Length)) > 0)
+                raw.AddRange(buf.Take(n));
+
+            proc.WaitForExit();
+
+            var samples = new float[raw.Count / 2];
+            for (int i = 0; i < samples.Length; i++)
+            {
+                short v = (short)(raw[i * 2] | (raw[i * 2 + 1] << 8));
+                samples[i] = v / 32768f;
             }
-            return dst;
+            return samples;
         }
 
         private static string FormatTime(double seconds)
