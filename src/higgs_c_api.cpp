@@ -19,6 +19,8 @@ struct higgs_tts_handle {
     bool hf_loaded = false;
 };
 
+extern "C" {
+
 HIGGS_API higgs_tts_handle* higgs_tts_load(const char* gguf_path) {
     auto* h = new higgs_tts_handle();
     if (!higgs_test_load_vocab(gguf_path, &h->model)) {
@@ -117,3 +119,5 @@ HIGGS_API int higgs_tts_decode(higgs_tts_handle* h,
     std::memcpy(out_pcm, pcm.data(), pcm.size() * sizeof(float));
     return T_pcm;
 }
+
+} // extern "C"

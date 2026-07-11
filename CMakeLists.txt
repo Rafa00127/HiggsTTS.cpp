@@ -9,7 +9,11 @@ if(NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
 endif()
 
 # ── ggml ────────────────────────────────────────────────────────────────────
+option(HIGGS_GGML_STATIC "Statically link ggml into a single DLL" OFF)
 if(NOT TARGET ggml)
+    if(HIGGS_GGML_STATIC)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    endif()
     add_subdirectory(ggml)
 endif()
 
