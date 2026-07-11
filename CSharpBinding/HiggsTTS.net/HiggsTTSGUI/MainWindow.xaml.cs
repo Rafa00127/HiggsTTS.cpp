@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Media;
 using System.Text.Json;
@@ -12,8 +13,14 @@ namespace HiggsTTSGUI
     {
         private HiggsTTS? _tts;
         private float[]? _pcm;
+        private int[]? _cachedRefCodes;
+        private string? _cachedRefWav;
+        private string? _cachedRefText;
         private string? _modelPath;
         private bool _busy;
+        private bool _inputTouched;
+
+        private const string PlaceholderText = "Enter text to synthesize here...";
 
         // ── Tag definitions (Higgs emotion/style/sfx/prosody tokens) ──────
         private static readonly (string label, string token)[] Tags =
@@ -185,6 +192,9 @@ namespace HiggsTTSGUI
             _tts = null;
             _modelPath = null;
             _pcm = null;
+            _cachedRefCodes = null;
+            _cachedRefWav = null;
+            _cachedRefText = null;
             BtnLoad.IsEnabled = true;
             BtnLoad.Content = "Load";
             BtnUnload.IsEnabled = false;
@@ -192,6 +202,24 @@ namespace HiggsTTSGUI
             BtnPlay.IsEnabled = false;
             BtnSave.IsEnabled = false;
             LblStatus.Text = "Model unloaded.";
+        }
+
+        private void TxtInput_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (!_inputTouched && TxtInput.Text == PlaceholderText)
+            {
+                TxtInput.Text = "";
+                _inputTouched = true;
+            }
+        }
+
+        private void TxtInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(TxtInput.Text))
+            {
+                _inputTouched = false;
+                TxtInput.Text = PlaceholderText;
+            }
         }
 
         private void BrowseTokenizer(object sender, RoutedEventArgs e)
@@ -289,10 +317,30 @@ namespace HiggsTTSGUI
             BtnSynth.Content = "Synthesizing...";
             LblInfo.Content = "";
 
-            // Load model on UI thread (needed before background work)
-            LblStatus.Text = "Loading model...";
-            bool modelOk = await Task.Run(() => EnsureModel());
-            if (!modelOk)
+            // Auto-load model if not loaded
+            if (_tts == null && TxtModel.Text.Trim().Length > 0)
+            {
+                LblStatus.Text = "Loading model...";
+                bool ok = await Task.Run(() => EnsureModel());
+                if (ok)
+                {
+                    var tokPath = TxtTokenizer.Text.Trim();
+                    if (tokPath.Length > 0)
+                        _tts!.SetTokenizer(tokPath);
+                    BtnLoad.Content = "Loaded";
+                    BtnLoad.IsEnabled = false;
+                    BtnUnload.IsEnabled = true;
+                }
+                else
+                {
+                    _busy = false;
+                    BtnSynth.Content = "Synthesize";
+                    EnableSynthIfReady();
+                    return;
+                }
+            }
+
+            if (_tts == null)
             {
                 _busy = false;
                 BtnSynth.Content = "Synthesize";
@@ -304,11 +352,25 @@ namespace HiggsTTSGUI
             {
                 try
                 {
-                    Dispatcher.Invoke(() =>
-                        LblStatus.Text = "Encoding reference audio...");
+                    // ── Encode reference (cached per ref_wav + ref_text) ──
+                    int[] refCodes;
+                    if (_cachedRefCodes != null && _cachedRefWav == refWav && _cachedRefText == refText)
+                    {
+                        refCodes = _cachedRefCodes;
+                    }
+                    else
+                    {
+                        Dispatcher.Invoke(() =>
+                            LblStatus.Text = "Encoding reference audio...");
 
-                    var refAudio = ReadWavMonoFloat(refWav);
-                    var refCodes = _tts!.EncodeRef(refAudio);
+                        var refAudio = ReadWavMonoFloat(refWav);
+                        refCodes = _tts!.EncodeRef(refAudio);
+                        _cachedRefCodes = refCodes;
+                        _cachedRefWav = refWav;
+                        _cachedRefText = refText;
+                    }
+
+                    var sw = Stopwatch.StartNew();
 
                     Dispatcher.Invoke(() =>
                         LblStatus.Text = "Generating speech...");
@@ -321,12 +383,14 @@ namespace HiggsTTSGUI
 
                     var pcm = _tts.Decode(rawCodes);
                     _pcm = pcm;
+                    sw.Stop();
 
                     var duration = pcm.Length / 24000.0;
+                    var rtf = sw.Elapsed.TotalSeconds / duration;
                     Dispatcher.Invoke(() =>
                     {
                         LblStatus.Text = "Ready.";
-                        LblInfo.Content = $"Duration {duration:F1}s | {pcm.Length} samples";
+                        LblInfo.Content = $"Duration {duration:F1}s | RTF {rtf:F2}x | {pcm.Length} samples";
                     });
                 }
                 catch (Exception ex)
