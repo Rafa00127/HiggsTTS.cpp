@@ -68,6 +68,7 @@ HIGGS_API int higgs_tts_encode_ref(higgs_tts_handle* h,
 HIGGS_API int higgs_tts_ar_generate(higgs_tts_handle* h,
                                      const char* target_text,
                                      const char* ref_text,
+                                     int has_ref_text,
                                      const int32_t* in_codes, int T_in,
                                      float temperature, int seed,
                                      int32_t* out_codes) {
@@ -83,12 +84,11 @@ HIGGS_API int higgs_tts_ar_generate(higgs_tts_handle* h,
     auto target_tokens = tokenize(target_text);
 
     std::vector<int32_t> ref_text_tokens;
-    if (ref_text && ref_text[0]) {
+    if (has_ref_text && ref_text && ref_text[0]) {
         ref_text_tokens = tokenize(ref_text);
     }
 
     int L_audio = T_in + N - 1;
-    // has_ref_audio always true when reference codes were encoded
     auto prompt_ids = higgs_build_prompt(&h->model, target_tokens,
                                           ref_text_tokens, L_audio, true);
 

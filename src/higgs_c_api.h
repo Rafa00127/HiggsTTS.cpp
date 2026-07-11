@@ -47,6 +47,7 @@ HIGGS_API int higgs_tts_ar_generate(
     higgs_tts_handle* h,
     const char* target_text,
     const char* ref_text,
+    int has_ref_text,
     const int32_t* in_codes, int T_in,
     float temperature, int seed,
     int32_t* out_codes);

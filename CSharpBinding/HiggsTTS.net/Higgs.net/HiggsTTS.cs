@@ -39,6 +39,7 @@ public sealed class HiggsTTS : IDisposable
         IntPtr handle,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string targetText,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? refText,
+        int hasRefText,
         int[] inCodes, int TIn,
         float temperature, int seed,
         int[] outCodes);
@@ -117,12 +118,13 @@ public sealed class HiggsTTS : IDisposable
                              float temperature = 0.9f, int seed = 42)
     {
         EnsureNotDisposed();
+        int hasRefText = string.IsNullOrEmpty(refText) ? 0 : 1;
         int TIn = refCodes.Length / 8;
         int maxSteps = targetText.Length * 12 + 500;
         int[] buffer = new int[maxSteps * 8];
 
-        int TRaw = higgs_tts_ar_generate(_handle, targetText, refText,
-                                          refCodes, TIn, temperature, seed, buffer);
+        int TRaw = higgs_tts_ar_generate(_handle, targetText, refText ?? "",
+                                          hasRefText, refCodes, TIn, temperature, seed, buffer);
         if (TRaw < 0)
             throw new InvalidOperationException("ARGenerate failed");
 

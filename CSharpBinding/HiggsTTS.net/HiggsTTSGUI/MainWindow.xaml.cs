@@ -401,8 +401,7 @@ namespace HiggsTTSGUI
                     Dispatcher.Invoke(() =>
                         LblStatus.Text = "Generating speech...");
 
-                    var arRefText = string.IsNullOrEmpty(refText) ? null : refText;
-                    var rawCodes = _tts.ARGenerate(fullText, arRefText, refCodes, temp, seed);
+                    var rawCodes = _tts.ARGenerate(fullText, refText, refCodes, temp, seed);
 
                     Dispatcher.Invoke(() =>
                         LblStatus.Text = "Decoding audio...");
