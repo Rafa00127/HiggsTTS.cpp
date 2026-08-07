@@ -375,3 +375,235 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
     ggml_free(kv_ctx);
     return true;
 }
+
+// ── higgs_backbone_ar_stream ────────────────────────────────────────────────────
+// Streaming variant: same as higgs_backbone_ar but with per-frame callback,
+// max_actions cap, and early-stop support.
+bool higgs_backbone_ar_stream(higgs_test_model* m, const int32_t* codes, int T_frames,
+                               const int32_t* prompt_ids, int L_prompt,
+                               float temperature, int seed, int max_actions,
+                               std::vector<int32_t>& raw_codes, int& T_raw,
+                               bool (*on_frame)(const int32_t *, void *), void * on_frame_user,
+                               bool * stopped_early) {
+    if (!m || !codes || !prompt_ids || T_frames < 1 || L_prompt < 1) return false;
+
+    const int N = 8, Vcb = 1026, D = 2560;
+    const int hd = 128, nh = 32, nkv_h = 8;
+    const float eps = 1e-6f;
+    if (stopped_early) *stopped_early = false;
+    srand(seed);
+
+    // Apply delay pattern
+    auto delayed = higgs_apply_delay_pattern(codes, T_frames, N);
+    int L_audio = T_frames + N - 1;
+    int L = L_prompt;
+    int n_text = std::max(1, L_prompt - L_audio - 5);
+    int max_steps = n_text * 12 + 200;
+    if (max_actions > 0) max_steps = std::min(max_steps, max_actions);
+
+    // ── Allocate KV cache ───────────────────────────────────────────────────
+    int max_ctx = L_prompt + max_steps + 10;
+    ggml_init_params kv_ip = { ggml_tensor_overhead() * 2, nullptr, true };
+    ggml_context* kv_ctx = ggml_init(kv_ip);
+    ggml_tensor* kv_k = ggml_new_tensor_4d(kv_ctx, GGML_TYPE_F16, hd, max_ctx, nkv_h, 36);
+    ggml_tensor* kv_v = ggml_new_tensor_4d(kv_ctx, GGML_TYPE_F16, hd, max_ctx, nkv_h, 36);
+    size_t kv_kb = ggml_nbytes(kv_k), kv_vb = ggml_nbytes(kv_v);
+    ggml_backend_buffer_t kv_buf = ggml_backend_alloc_buffer(m->backend, kv_kb + kv_vb);
+    char* kv_base = (char*)ggml_backend_buffer_get_base(kv_buf);
+    ggml_backend_tensor_alloc(kv_buf, kv_k, kv_base);
+    ggml_backend_tensor_alloc(kv_buf, kv_v, kv_base + kv_kb);
+
+    // ── Prefill graph ───────────────────────────────────────────────────────
+    ggml_init_params ip = { m->compute_meta.size(), m->compute_meta.data(), true };
+    ggml_context* ctx = ggml_init(ip);
+    if (!ctx) { ggml_backend_buffer_free(kv_buf); ggml_free(kv_ctx); return false; }
+
+    std::vector<ggml_tensor*> inp;
+    ggml_tensor* x = build_prefill_embeds(ctx, prompt_ids, L_prompt, delayed.data(), L_audio, N, m, inp);
+
+    ggml_tensor* pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, L);
+    ggml_set_input(pos); inp.push_back(pos);
+    ggml_tensor* prefill_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, L, L);
+    ggml_set_input(prefill_mask); inp.push_back(prefill_mask);
+
+    ggml_cgraph* gf = ggml_new_graph_custom(ctx, 8192, false);
+    const core_attn::KvSelfAttnParams kvp = {
+        nh, nkv_h, hd, nh / nkv_h, 0, m->rope_theta, 32.0f, 1.0f,
+        1.0f / sqrtf((float)hd), eps, core_attn::GQA_NATIVE,
+    };
+
+    for (int i = 0; i < 36; i++) {
+        auto& ly = m->layer[i];
+        ggml_tensor* residual = x;
+        x = ggml_rms_norm(ctx, x, eps);
+        x = ggml_mul(ctx, x, ggml_reshape_2d(ctx, ly.attn_norm, D, 1));
+        x = core_attn::kv_self_attn(ctx, gf, x, ly.attn_q, ly.attn_k, ly.attn_v, ly.attn_o,
+                                    ly.q_norm, ly.k_norm, pos, prefill_mask, kv_k, kv_v, i, 0, kvp);
+        x = ggml_add(ctx, residual, x);
+        residual = x;
+        x = ggml_rms_norm(ctx, x, eps);
+        x = ggml_mul(ctx, x, ggml_reshape_2d(ctx, ly.ffn_norm, D, 1));
+        x = core_ffn::swiglu(ctx, x, ly.ffn_gate, ly.ffn_up, ly.ffn_down);
+        x = ggml_add(ctx, residual, x);
+    }
+    x = ggml_rms_norm(ctx, x, eps);
+    x = ggml_mul(ctx, x, ggml_reshape_2d(ctx, m->output_norm, D, 1));
+    ggml_tensor* last_hidden = ggml_view_1d(ctx, x, D, (L - 1) * x->nb[1]);
+    ggml_tensor* hidden_2d = ggml_reshape_2d(ctx, last_hidden, D, 1);
+    ggml_tensor* logits = ggml_mul_mat(ctx, m->fused_head, hidden_2d);
+    ggml_set_output(logits);
+    ggml_build_forward_expand(gf, logits);
+
+    ggml_backend_sched_reset(m->sched);
+    if (!ggml_backend_sched_alloc_graph(m->sched, gf)) {
+        fprintf(stderr, "BAR: prefill alloc fail\n");
+        ggml_free(ctx); ggml_backend_buffer_free(kv_buf); ggml_free(kv_ctx); return false;
+    }
+    {
+        int k = 0;
+        std::vector<int32_t> safe_ids(L_prompt);
+        for (int i = 0; i < L_prompt; i++) safe_ids[i] = (prompt_ids[i] == AUDIO_PLACEHOLDER_ID) ? 0 : prompt_ids[i];
+        ggml_backend_tensor_set(inp[k], safe_ids.data(), 0, L_prompt * sizeof(int32_t)); k++;
+        for (int c = 0; c < N; c++) {
+            std::vector<int32_t> cb_idx(L_audio);
+            for (int t = 0; t < L_audio; t++) cb_idx[t] = c * Vcb + delayed[t * N + c];
+            ggml_backend_tensor_set(inp[k], cb_idx.data(), 0, L_audio * sizeof(int32_t)); k++;
+        }
+        std::vector<float> mask(L_prompt);
+        for (int i = 0; i < L_prompt; i++) mask[i] = (prompt_ids[i] == AUDIO_PLACEHOLDER_ID) ? 0.0f : 1.0f;
+        ggml_backend_tensor_set(inp[k], mask.data(), 0, L_prompt * sizeof(float)); k++;
+        std::vector<int32_t> pos_data(L);
+        for (int i = 0; i < L; i++) pos_data[i] = i;
+        ggml_backend_tensor_set(inp[k], pos_data.data(), 0, L * sizeof(int32_t)); k++;
+        std::vector<ggml_fp16_t> mask_data(L * L);
+        for (int i = 0; i < L; i++)
+            for (int j = 0; j < L; j++)
+                mask_data[i * L + j] = (j <= i) ? 0 : ggml_fp32_to_fp16(-INFINITY);
+        ggml_backend_tensor_set(inp[k], mask_data.data(), 0, L * L * sizeof(ggml_fp16_t)); k++;
+    }
+
+    if (ggml_backend_sched_graph_compute(m->sched, gf) != GGML_STATUS_SUCCESS) {
+        fprintf(stderr, "BAR: prefill compute fail\n");
+        ggml_free(ctx); ggml_backend_buffer_free(kv_buf); ggml_free(kv_ctx); return false;
+    }
+
+    std::vector<float> logits_buf(N * Vcb);
+    ggml_backend_tensor_get(logits, logits_buf.data(), 0, N * Vcb * sizeof(float));
+    std::vector<float> cur_hidden(D);
+    ggml_backend_tensor_get(last_hidden, cur_hidden.data(), 0, D * sizeof(float));
+    ggml_free(ctx);
+
+    // ── AR Decode Loop ──────────────────────────────────────────────────────
+    int n_past = L;
+    int delay_count = 0;
+    int eoc_countdown = -1;
+    std::vector<std::vector<int32_t>> all_codes;
+
+    for (int step = 0; step < max_steps; step++) {
+        std::vector<int32_t> codes_n;
+        sample_codes(logits_buf.data(), N, Vcb, temperature, codes_n);
+
+        if (delay_count < N) {
+            int next_cb = delay_count + 1;
+            if (next_cb < N)
+                for (int c = next_cb; c < N; c++) codes_n[c] = BOC_ID;
+            delay_count++;
+        } else if (eoc_countdown >= 0) {
+            eoc_countdown--;
+        } else if (codes_n[0] == EOC_ID) {
+            if (N <= 2) break;
+            eoc_countdown = N - 2;
+        }
+        all_codes.push_back(codes_n);
+
+        // Per-frame callback: a complete undelayed frame is ready once
+        // all_codes has at least N entries.
+        if (on_frame && (int)all_codes.size() >= N) {
+            const int t = (int)all_codes.size() - N;
+            int32_t frame[N];
+            for (int c = 0; c < N; c++) {
+                frame[c] = all_codes[t + c][c];
+            }
+            if (!on_frame(frame, on_frame_user)) {
+                if (stopped_early) *stopped_early = true;
+                break;
+            }
+        }
+        if (eoc_countdown == 0) break;
+
+        // Build step graph
+        ggml_init_params step_ip = { m->compute_meta.size(), m->compute_meta.data(), true };
+        ggml_context* step_ctx = ggml_init(step_ip);
+        ggml_cgraph* step_gf = ggml_new_graph_custom(step_ctx, 2048, false);
+
+        ggml_tensor* cb_ids[8];
+        for (int c = 0; c < N; c++) {
+            cb_ids[c] = ggml_new_tensor_1d(step_ctx, GGML_TYPE_I32, 1);
+            ggml_set_input(cb_ids[c]);
+        }
+        ggml_tensor* step_emb = nullptr;
+        for (int c = 0; c < N; c++) {
+            ggml_tensor* cb_emb = ggml_get_rows(step_ctx, m->fused_embed, cb_ids[c]);
+            step_emb = step_emb ? ggml_add(step_ctx, step_emb, cb_emb) : cb_emb;
+        }
+        ggml_tensor* pos_t = ggml_new_tensor_1d(step_ctx, GGML_TYPE_I32, 1);
+        ggml_set_input(pos_t);
+
+        const core_attn::KvSelfAttnParams kvp_step = {
+            nh, nkv_h, hd, nh / nkv_h, 0, m->rope_theta, 32.0f, 1.0f,
+            1.0f / sqrtf((float)hd), eps, core_attn::GQA_NATIVE,
+        };
+
+        ggml_tensor* cur = step_emb;
+        for (int i = 0; i < 36; i++) {
+            auto& ly = m->layer[i];
+            ggml_tensor* residual = cur;
+            cur = ggml_rms_norm(step_ctx, cur, eps);
+            cur = ggml_mul(step_ctx, cur, ggml_reshape_2d(step_ctx, ly.attn_norm, D, 1));
+            cur = core_attn::kv_self_attn(step_ctx, step_gf, cur, ly.attn_q, ly.attn_k, ly.attn_v, ly.attn_o,
+                                          ly.q_norm, ly.k_norm, pos_t, nullptr, kv_k, kv_v, i, n_past, kvp_step);
+            cur = ggml_add(step_ctx, residual, cur);
+            residual = cur;
+            cur = ggml_rms_norm(step_ctx, cur, eps);
+            cur = ggml_mul(step_ctx, cur, ggml_reshape_2d(step_ctx, ly.ffn_norm, D, 1));
+            cur = core_ffn::swiglu(step_ctx, cur, ly.ffn_gate, ly.ffn_up, ly.ffn_down);
+            cur = ggml_add(step_ctx, residual, cur);
+        }
+        cur = ggml_rms_norm(step_ctx, cur, eps);
+        cur = ggml_mul(step_ctx, cur, ggml_reshape_2d(step_ctx, m->output_norm, D, 1));
+        ggml_tensor* step_logits = ggml_mul_mat(step_ctx, m->fused_head, cur);
+        ggml_set_output(step_logits);
+        ggml_build_forward_expand(step_gf, step_logits);
+
+        ggml_backend_sched_reset(m->sched);
+        if (!ggml_backend_sched_alloc_graph(m->sched, step_gf)) {
+            fprintf(stderr, "BAR: step %d alloc fail\n", step); break;
+        }
+        for (int c = 0; c < N; c++) {
+            int idx = c * Vcb + codes_n[c];
+            ggml_backend_tensor_set(cb_ids[c], &idx, 0, sizeof(int32_t));
+        }
+        ggml_backend_tensor_set(pos_t, &n_past, 0, sizeof(int32_t));
+        ggml_backend_sched_graph_compute(m->sched, step_gf);
+        ggml_backend_tensor_get(step_logits, logits_buf.data(), 0, N * Vcb * sizeof(float));
+        ggml_free(step_ctx);
+        n_past++;
+    }
+
+    // ── Reverse delay pattern ───────────────────────────────────────────────
+    int T_produced = (int)all_codes.size();
+    T_raw = T_produced - N + 1;
+    if (T_raw < 1) {
+        ggml_backend_buffer_free(kv_buf);
+        ggml_free(kv_ctx);
+        return false;
+    }
+    raw_codes.resize(T_raw * N);
+    for (int t = 0; t < T_raw; t++)
+        for (int c = 0; c < N; c++)
+            raw_codes[t * N + c] = all_codes[t + c][c];
+
+    ggml_backend_buffer_free(kv_buf);
+    ggml_free(kv_ctx);
+    return true;
+}

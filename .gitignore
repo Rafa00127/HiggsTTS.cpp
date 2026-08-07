@@ -1,6 +1,7 @@
 # build
 build/
 build-*/
+.cache/
 
 # IDE
 .vs/

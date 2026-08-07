@@ -32,23 +32,85 @@ or you can convert the model yourself, see [here](https://github.com/Rafa00127/H
 ## Usage
 
 ```bash
-# CLI: WAV → WAV
+# CLI
 higgs_cli --model higgs-v3-tts.gguf --ref-wav ref.wav --text "Hello world" --out out.wav
 
-# CLI with emotion tags (optional, requires tokenizer.json)
+# CLI with emotion tags
 higgs_cli --model higgs-v3-tts.gguf --ref-wav ref.wav --text "Hello world" --tokenizer tokenizer.json --out out.wav
 
-# Simple TCP server: accepts text + temperature → returns float32 PCM
+# Server
 higgs_server --model higgs-v3-tts.gguf --ref-wav ref.wav --ref-text "reference transcript" --port 9989
 
-# Server with emotion tags (optional, requires tokenizer.json)
+# Server with emotion tags
 higgs_server --model higgs-v3-tts.gguf --ref-wav ref.wav --ref-text "reference transcript" --tokenizer tokenizer.json --port 9989
+
+# Streaming mode
+higgs_server --model higgs-v3-tts.gguf --ref-wav ref.wav --stream --port 9989
+
+# Streaming with action cap
+higgs_server --model higgs-v3-tts.gguf --ref-wav ref.wav --stream --max-actions 500
 ```
 
 `--tokenizer` is optional. It enables recognition of special emotion / style / prosody tags
 (e.g. `<|style:whispering|>`)
 when they appear in the prompt text. Without it, the model falls back to the built-in
 GGUF BPE tokenizer.
+
+### Server options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--model` | *(required)* | Path to GGUF model file |
+| `--ref-wav` | *(required)* | Reference audio WAV for voice cloning |
+| `--ref-text` | — | Transcript of reference audio (improves quality) |
+| `--tokenizer` | — | Path to HF `tokenizer.json` for emotion tag support |
+| `--port` | `9989` | TCP listen port |
+| `--temperature` | `0.9` | Sampling temperature |
+| `--seed` | `42` | Random seed |
+| `--stream` | off | Enable streaming protocol (framed PCM chunks instead of one-shot response) |
+| `--max-actions` | `0` | Cap AR decode steps (0 = auto from text length). Streaming only. |
+
+### Server protocol
+
+**Request** (same for both modes):
+
+```
+[4B text_len BE][4B temperature BE float][UTF-8 text]
+```
+
+**Response — one-shot** (default, `--stream` not set):
+
+```
+[4B n_samples BE][float32 PCM @ 24kHz]
+```
+
+Error: `[4B int32 = -1 BE]`
+
+**Response — streaming** (`--stream` set):
+
+A sequence of frames, each: `[1B type][4B payload bytes BE][payload]`
+
+| Type | Meaning |
+|------|---------|
+| `1` | float32 PCM chunk @ 24kHz |
+| `2` | end of stream |
+| `3` | UTF-8 error message |
+
+See [python_gui/say.py](python_gui/say.py) for a Python client example.
+
+### Quick demo with streaming
+
+```bash
+# Start the server in streaming mode (see Usage above), then:
+pip install pyaudio
+python python_gui/say.py "Hello world, this is a streaming TTS test."
+```
+
+The client connects, sends the text, and starts playing audio as soon as the first PCM
+chunk arrives — no waiting for the full utterance to finish. `say.py` uses pyaudio for
+gapless playback; pass `--no-stream` to fall back to the one-shot protocol.
+
+> If you use an AI agent to assist with your work, try asking it to call `say.py` and say hello.
 
 ## GUI
 

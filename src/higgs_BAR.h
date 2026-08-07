@@ -37,3 +37,22 @@ bool higgs_backbone_ar(
     int              seed,          // random seed (for reproducibility)
     std::vector<int32_t> & raw_codes, // output raw codes [T_raw*8] t-major
     int            & T_raw);        // output code frames
+
+/// Streaming variant: per-frame callback + early-stop + action cap.
+/// max_actions caps AR steps and KV-cache allocation; 0 uses heuristic default.
+/// on_frame called when a complete undelayed frame is ready; return false to stop.
+/// stopped_early (optional) set to true if callback requested early termination.
+bool higgs_backbone_ar_stream(
+    struct higgs_test_model * m,
+    const int32_t * codes,
+    int              T_frames,
+    const int32_t  * prompt_ids,
+    int              L_prompt,
+    float            temperature,
+    int              seed,
+    int              max_actions,
+    std::vector<int32_t> & raw_codes,
+    int            & T_raw,
+    bool (*on_frame)(const int32_t *, void *),
+    void * on_frame_user,
+    bool * stopped_early);
