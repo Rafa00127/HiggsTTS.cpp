@@ -39,3 +39,4 @@ python_gui/*.json
 *.user
 *.suo
 dotnet/
+README_QQ语音.md

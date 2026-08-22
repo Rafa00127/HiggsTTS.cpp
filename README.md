@@ -147,6 +147,9 @@ from `build/bin/` to the GUI output directory before running.
 The Tag dropdown gives quick access to all emotion / style / prosody tokens.
 Built-in audio player supports play / pause / seek.
 
+If you want to play some stupid tricks with your friend,
+The GUI can also send synthesized speech to QQ as a voice message — see [HiggsTTSGUI/README.md](CSharpBinding/HiggsTTS.net/HiggsTTSGUI/README.md).
+
 
 ## Special Token Reference
 

@@ -310,6 +310,36 @@
                         IsEnabled="False" Width="80" Margin="12,0,0,0" Padding="10,5"/>
             </Grid>
 
+            <!-- QQ voice send -->
+            <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ComboBox Grid.Column="0" x:Name="CmbQqType" Width="72" VerticalAlignment="Center"
+                          SelectionChanged="QqType_SelectionChanged">
+                    <ComboBoxItem Content="私聊" Tag="private"/>
+                    <ComboBoxItem Content="群聊" Tag="group"/>
+                </ComboBox>
+                <Label Grid.Column="1" x:Name="LblQqTarget" Content="QQ" VerticalAlignment="Center"
+                       Margin="8,0,0,0"/>
+                <TextBox Grid.Column="2" x:Name="TxtQqTarget" Margin="6,0,0,0"
+                         VerticalAlignment="Center"
+                         ToolTip="目标 QQ 号（私聊）或群号（群聊），纯数字"/>
+                <Label Grid.Column="3" Content="Token" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                <TextBox Grid.Column="4" x:Name="TxtQqToken" Width="150" Margin="6,0,0,0"
+                         VerticalAlignment="Center"
+                         ToolTip="NapCat HTTP Server 的访问令牌（Bearer token，可留空）"/>
+                <Button Grid.Column="5" x:Name="BtnSendQq" Content="Send Voice"
+                        Click="SendQqVoice_Click" IsEnabled="False" Margin="10,0,0,0"
+                        Padding="14,6" Background="#5a4a2d" Foreground="white"
+                        ToolTip="发送当前合成语音为 QQ 语音消息"/>
+            </Grid>
+
             <Label x:Name="LblInfo" Content="" Margin="0,4,0,0" VerticalAlignment="Center"
                    FontSize="12"/>
         </StackPanel>

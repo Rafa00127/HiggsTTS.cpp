@@ -23,6 +23,7 @@ namespace HiggsTTSGUI
         private string? _modelPath;
         private bool _busy;
         private bool _inputTouched;
+        private bool _qqIsGroup;
 
         // ── Playback ──
         private WaveOutEvent? _player;
@@ -101,6 +102,7 @@ namespace HiggsTTSGUI
         public MainWindow()
         {
             InitializeComponent();
+            CmbQqType.SelectedIndex = 0; // triggers QqType_SelectionChanged to set label/tooltip
             PopulateTags();
             LoadConfig();
         }
@@ -126,12 +128,16 @@ namespace HiggsTTSGUI
                         TxtRefText.Text = cfg.GetValueOrDefault("ref_text", "");
                         TxtTemp.Text    = cfg.GetValueOrDefault("temp", "0.9");
                         TxtSeed.Text    = cfg.GetValueOrDefault("seed", "42");
+                        TxtQqTarget.Text = cfg.GetValueOrDefault("qq_target", "");
+                        TxtQqToken.Text = cfg.GetValueOrDefault("qq_token", "");
                         var tag = cfg.GetValueOrDefault("tag", "");
                         for (int i = 0; i < CmbTag.Items.Count; i++)
                         {
                             if (CmbTag.Items[i] is ComboBoxItem item && item.Tag as string == tag)
                             { CmbTag.SelectedIndex = i; break; }
                         }
+                        CmbQqType.SelectedIndex =
+                            cfg.GetValueOrDefault("qq_type", "private") == "group" ? 1 : 0;
                     }
                 }
             }
@@ -151,6 +157,9 @@ namespace HiggsTTSGUI
                 ["temp"]     = TxtTemp.Text,
                 ["seed"]     = TxtSeed.Text,
                 ["tag"]      = tagItem?.Tag as string ?? "",
+                ["qq_type"]  = _qqIsGroup ? "group" : "private",
+                ["qq_target"] = TxtQqTarget.Text,
+                ["qq_token"] = TxtQqToken.Text,
             };
             File.WriteAllText(ConfigPath,
                 JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true }));
@@ -225,6 +234,7 @@ namespace HiggsTTSGUI
             BtnPlay.IsEnabled = false;
             BtnStop.IsEnabled = false;
             BtnSave.IsEnabled = false;
+            BtnSendQq.IsEnabled = false;
             LblStatus.Text = "Model unloaded.";
         }
 
@@ -329,6 +339,7 @@ namespace HiggsTTSGUI
             BtnPlay.IsEnabled = false;
             BtnStop.IsEnabled = false;
             BtnSave.IsEnabled = false;
+            BtnSendQq.IsEnabled = false;
             _pcm = null;
             StopPlayback();
 
@@ -435,6 +446,7 @@ namespace HiggsTTSGUI
                         BtnPlay.IsEnabled = _pcm != null;
                         BtnStop.IsEnabled = _pcm != null;
                         BtnSave.IsEnabled = _pcm != null;
+                        BtnSendQq.IsEnabled = _pcm != null;
                         EnableSynthIfReady();
                     });
                 }
@@ -578,6 +590,60 @@ namespace HiggsTTSGUI
             catch (Exception ex)
             {
                 LblInfo.Content = $"Save error: {ex.Message}";
+            }
+        }
+
+        // ── Send to QQ ───────────────────────────────────────────────────
+
+        private void QqType_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (LblQqTarget is null || TxtQqTarget is null) return;
+            if (CmbQqType.SelectedItem is ComboBoxItem item)
+            {
+                _qqIsGroup = (item.Tag as string) == "group";
+                LblQqTarget.Content = _qqIsGroup ? "群号" : "QQ";
+                TxtQqTarget.ToolTip = _qqIsGroup
+                    ? "目标群号（纯数字），如 57893555"
+                    : "目标 QQ 号（私聊，纯数字），如 100000";
+            }
+        }
+
+        private async void SendQqVoice_Click(object sender, RoutedEventArgs e)
+        {
+            if (_pcm == null) return;
+            var target = TxtQqTarget.Text.Trim();
+            if (target.Length == 0 || !long.TryParse(target, out var qq))
+            {
+                MessageBox.Show("请输入有效的目标群号/CQ号（纯数字）。", "QQ Send");
+                return;
+            }
+
+            var pcm = _pcm; // snapshot of the currently synthesized voice
+            var token = TxtQqToken.Text.Trim();
+            var auth = token.Length == 0 ? null : token;
+            BtnSendQq.IsEnabled = false;
+            BtnSendQq.Content = "Sending...";
+            try
+            {
+                LblInfo.Content = _qqIsGroup
+                    ? $"Sending voice to group {target} ..."
+                    : $"Sending voice to QQ {target} ...";
+                await (_qqIsGroup
+                    ? QqVoice.SendGroupPcmVoiceAsync(qq, pcm, token: auth)
+                    : QqVoice.SendPrivatePcmVoiceAsync(qq, pcm, token: auth));
+                LblInfo.Content = _qqIsGroup
+                    ? $"Voice sent to group {target}"
+                    : $"Voice sent to QQ {target}";
+                LblStatus.Text = "Voice sent to QQ.";
+            }
+            catch (Exception ex)
+            {
+                LblInfo.Content = $"QQ send failed: {ex.Message}";
+            }
+            finally
+            {
+                BtnSendQq.IsEnabled = _pcm != null;
+                BtnSendQq.Content = "Send Voice";
             }
         }
 
