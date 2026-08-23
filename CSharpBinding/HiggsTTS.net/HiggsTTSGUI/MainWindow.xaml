@@ -181,11 +181,10 @@
             </GroupBox.HeaderTemplate>
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>   <!-- 0: labels -->
+                    <ColumnDefinition Width="*"/>      <!-- 1: path / text boxes -->
+                    <ColumnDefinition Width="Auto"/>   <!-- 2: Browse -->
+                    <ColumnDefinition Width="Auto"/>   <!-- 3: action buttons -->
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -196,31 +195,42 @@
 
                 <!-- Model -->
                 <Label Grid.Row="0" Grid.Column="0" Content="Model GGUF" VerticalAlignment="Center" Width="90"/>
-                <TextBox Grid.Row="0" Grid.Column="1" x:Name="TxtModel" Margin="0,2" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="0" Grid.Column="1" x:Name="TxtModel" Margin="0,2"
+                         VerticalAlignment="Center" TextChanged="PathText_TextChanged"/>
                 <Button Grid.Row="0" Grid.Column="2" Content="Browse" Click="BrowseModel" Margin="6,2,0,2"
-                        Width="60" Padding="6,4"/>
-                <Button Grid.Row="0" Grid.Column="3" x:Name="BtnLoad" Content="Load" Click="LoadModel_Click"
-                        Margin="6,2,0,2" Width="50" Padding="6,4"
-                        Background="#2d5a2d" Foreground="white" FontWeight="Bold"/>
-                <Button Grid.Row="0" Grid.Column="4" x:Name="BtnUnload" Content="Unload" Click="UnloadModel_Click"
-                        Margin="6,2,0,2" Width="55" Padding="6,4" IsEnabled="False"
-                        Background="#5a2d2d" Foreground="white"/>
+                        Width="60" Padding="6,4" VerticalAlignment="Center"/>
+                <StackPanel Grid.Row="0" Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="BtnLoad" Content="Load" Click="LoadModel_Click"
+                            Margin="6,2,0,2" Width="50" Padding="6,4"
+                            Background="#2d5a2d" Foreground="white" FontWeight="Bold"/>
+                    <Button x:Name="BtnUnload" Content="Unload" Click="UnloadModel_Click"
+                            Margin="6,2,0,2" Width="55" Padding="6,4" IsEnabled="False"
+                            Background="#5a2d2d" Foreground="white"/>
+                </StackPanel>
 
                 <!-- Ref Audio -->
                 <Label Grid.Row="1" Grid.Column="0" Content="Ref Audio" VerticalAlignment="Center"/>
-                <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtRefWav" Margin="0,2" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtRefWav" Margin="0,2"
+                         VerticalAlignment="Center" TextChanged="RefWav_TextChanged"/>
                 <Button Grid.Row="1" Grid.Column="2" Content="Browse" Click="BrowseRefWav" Margin="6,2,0,2"
-                        Width="60" Padding="6,4"/>
+                        Width="60" Padding="6,4" VerticalAlignment="Center"/>
 
                 <!-- Tokenizer -->
                 <Label Grid.Row="2" Grid.Column="0" Content="Tokenizer" VerticalAlignment="Center"/>
-                <TextBox Grid.Row="2" Grid.Column="1" x:Name="TxtTokenizer" Margin="0,2" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="2" Grid.Column="1" x:Name="TxtTokenizer" Margin="0,2"
+                         VerticalAlignment="Center" TextChanged="PathText_TextChanged"/>
                 <Button Grid.Row="2" Grid.Column="2" Content="Browse" Click="BrowseTokenizer" Margin="6,2,0,2"
-                        Width="60" Padding="6,4"/>
+                        Width="60" Padding="6,4" VerticalAlignment="Center"/>
 
-                <!-- Ref Text -->
+                <!-- Ref Text + Encode Ref (bottom-right, fills the gutter) -->
                 <Label Grid.Row="3" Grid.Column="0" Content="Ref Text" VerticalAlignment="Center"/>
-                <TextBox Grid.Row="3" Grid.Column="1" x:Name="TxtRefText" Margin="0,2" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" x:Name="TxtRefText"
+                         Margin="0,2" VerticalAlignment="Center" TextChanged="PathText_TextChanged"/>
+                <Button Grid.Row="3" Grid.Column="3" x:Name="BtnEncodeRef" Content="Encode Ref"
+                        Click="EncodeRef_Click" Margin="6,2,0,2" Width="90" Padding="6,4"
+                        IsEnabled="False" VerticalAlignment="Center"
+                        Background="#2d4a5d" Foreground="white"
+                        ToolTip="Compute ref codes from the current reference audio. This defines the cloned voice — lets you switch voices without re-synthesizing."/>
             </Grid>
         </GroupBox>
 

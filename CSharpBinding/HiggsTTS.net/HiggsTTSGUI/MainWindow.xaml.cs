@@ -19,7 +19,6 @@ namespace HiggsTTSGUI
         private float[]? _pcm;
         private int[]? _cachedRefCodes;
         private string? _cachedRefWav;
-        private string? _cachedRefText;
         private string? _modelPath;
         private bool _busy;
         private bool _inputTouched;
@@ -226,11 +225,11 @@ namespace HiggsTTSGUI
             _pcm = null;
             _cachedRefCodes = null;
             _cachedRefWav = null;
-            _cachedRefText = null;
             BtnLoad.IsEnabled = true;
             BtnLoad.Content = "Load";
             BtnUnload.IsEnabled = false;
             BtnSynth.IsEnabled = false;
+            BtnEncodeRef.IsEnabled = false;
             BtnPlay.IsEnabled = false;
             BtnStop.IsEnabled = false;
             BtnSave.IsEnabled = false;
@@ -267,13 +266,132 @@ namespace HiggsTTSGUI
         {
             var dlg = new Microsoft.Win32.OpenFileDialog
             { Filter = "Audio files (*.wav;*.mp3;*.flac;*.ogg)|*.wav;*.mp3;*.flac;*.ogg|All files (*.*)|*.*" };
-            if (dlg.ShowDialog() == true) TxtRefWav.Text = dlg.FileName;
+            if (dlg.ShowDialog() == true)
+            {
+                TxtRefWav.Text = dlg.FileName;
+                TryAutoLoadRefText(dlg.FileName); // find same-named .txt beside the wav and fill ref text
+            }
+        }
+
+        // Fires the moment the ref audio path changes (browse, paste, config restore).
+        // Auto-fills the ref text from a same-named .txt beside the audio.
+        private void RefWav_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (sender is not TextBox tb) return;
+            tb.ToolTip = tb.Text; // keep full path readable on hover
+
+            var audio = tb.Text.Trim();
+            if (audio.Length == 0) return;
+            var ext = Path.GetExtension(audio).ToLowerInvariant();
+            if (ext != ".wav" && ext != ".mp3" && ext != ".flac" && ext != ".ogg") return;
+            TryAutoLoadRefText(audio);
+        }
+
+        // When a reference audio is selected, auto-load a same-named .txt beside it as the ref text.
+        private void TryAutoLoadRefText(string audioPath)
+        {
+            try
+            {
+                var txtPath = Path.ChangeExtension(audioPath, ".txt");
+                if (!File.Exists(txtPath))
+                {
+                    LblStatus.Text = $"No ref text found: {Path.GetFileName(txtPath)}";
+                    LblStatus.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+                    return;
+                }
+                TxtRefText.Text = File.ReadAllText(txtPath).Trim();
+                LblStatus.Text = $"Ref text loaded from {Path.GetFileName(txtPath)}";
+                LblStatus.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+            }
+            catch { /* keep current ref text on failure */ }
+        }
+
+        // Keep the hover tooltip in sync with the full path so truncated paths
+        // in the config textboxes are still readable by hovering.
+        private void PathText_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (sender is TextBox tb)
+                tb.ToolTip = tb.Text;
         }
 
         private void EnableSynthIfReady()
         {
-            BtnSynth.IsEnabled = !_busy && TxtModel.Text.Length > 0
-                                  && TxtRefWav.Text.Length > 0;
+            bool ready = !_busy && TxtModel.Text.Length > 0 && TxtRefWav.Text.Length > 0;
+            BtnSynth.IsEnabled = ready;
+            BtnEncodeRef.IsEnabled = ready;
+        }
+
+        // ── Encode reference codes ────────────────────────────────────────
+
+        private async void EncodeRef_Click(object sender, RoutedEventArgs e)
+        {
+            if (_busy) return;
+
+            var refWav = TxtRefWav.Text.Trim();
+            if (refWav.Length == 0)
+            {
+                MessageBox.Show("Please select a reference audio first.", "Encode Ref");
+                return;
+            }
+
+            SaveConfig();
+
+            _busy = true;
+            BtnEncodeRef.IsEnabled = false;
+            BtnEncodeRef.Content = "Encoding...";
+            BtnSynth.IsEnabled = false;
+
+            try
+            {
+                // Auto-load model if not loaded
+                if (_tts == null && TxtModel.Text.Trim().Length > 0)
+                {
+                    LblStatus.Text = "Loading model...";
+                    bool ok = await Task.Run(() => EnsureModel());
+                    if (ok)
+                    {
+                        var tokPath = TxtTokenizer.Text.Trim();
+                        if (tokPath.Length > 0)
+                            _tts!.SetTokenizer(tokPath);
+                        BtnLoad.Content = "Loaded";
+                        BtnLoad.IsEnabled = false;
+                        BtnUnload.IsEnabled = true;
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+
+                if (_tts == null)
+                {
+                    MessageBox.Show("Please load a model first.", "Encode Ref");
+                    return;
+                }
+
+                var refCodes = await Task.Run(() =>
+                {
+                    var refAudio = ReadAudioMonoFloat(refWav);
+                    return _tts!.EncodeRef(refAudio);
+                });
+
+                _cachedRefCodes = refCodes;
+                _cachedRefWav = refWav;
+                LblStatus.Text = $"Ref codes computed: {refCodes.Length / 8} frames";
+                LblStatus.Foreground = new SolidColorBrush(Color.FromRgb(0x00, 0xaa, 0x00));
+                LblInfo.Content = $"Ref codes cached for {Path.GetFileName(refWav)}";
+            }
+            catch (Exception ex)
+            {
+                LblStatus.Text = $"Encode Ref error: {ex.Message}";
+                LblStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xff, 0x00, 0x00));
+            }
+            finally
+            {
+                _busy = false;
+                BtnEncodeRef.Content = "Encode Ref";
+                EnableSynthIfReady();
+            }
         }
 
         // ── Load model ────────────────────────────────────────────────────
@@ -391,7 +509,7 @@ namespace HiggsTTSGUI
                 {
                     // ── Encode reference (cached per ref_wav + ref_text) ──
                     int[] refCodes;
-                    if (_cachedRefCodes != null && _cachedRefWav == refWav && _cachedRefText == refText)
+                    if (_cachedRefCodes != null && _cachedRefWav == refWav)
                     {
                         refCodes = _cachedRefCodes;
                     }
@@ -404,7 +522,6 @@ namespace HiggsTTSGUI
                         refCodes = _tts!.EncodeRef(refAudio);
                         _cachedRefCodes = refCodes;
                         _cachedRefWav = refWav;
-                        _cachedRefText = refText;
                     }
 
                     var sw = Stopwatch.StartNew();
