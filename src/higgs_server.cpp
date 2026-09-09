@@ -37,6 +37,7 @@
 #include <atomic>
 #include <chrono>
 #include <clocale>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

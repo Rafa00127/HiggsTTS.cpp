@@ -63,6 +63,7 @@ target_compile_features(higgs_server PRIVATE cxx_std_17)
 target_link_libraries(higgs_server PRIVATE higgs_tts_lib)
 if(NOT MSVC)
     target_compile_options(higgs_server PRIVATE -O3)
+    target_link_libraries(higgs_server PRIVATE ws2_32)
 endif()
 
 # ── higgs_tts DLL (C ABI for C# P/Invoke) ──────────────────────────────────
