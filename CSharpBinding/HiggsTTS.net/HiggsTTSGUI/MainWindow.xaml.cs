@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -161,7 +162,11 @@ namespace HiggsTTSGUI
                 ["qq_token"] = TxtQqToken.Text,
             };
             File.WriteAllText(ConfigPath,
-                JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true }));
+                JsonSerializer.Serialize(cfg, new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                }));
         }
 
         // ── Tag combo ─────────────────────────────────────────────────────
