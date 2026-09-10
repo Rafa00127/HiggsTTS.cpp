@@ -635,7 +635,56 @@ bool higgs_prefill_encode(higgs_test_model* m, const float* audio, int n_samples
             fused = ggml_cont(ctx, ggml_transpose(ctx, fused));                // [T, 1024]
 
             ggml_cgraph *gf = ggml_new_graph_custom(ctx, 16384, false);
-            ggml_build_forward_expand(gf, fused);
+
+            // ── GPU RVQ encode (in-graph matmul+argmax, mirrors moss/audio.cpp) ──
+            // Each quantizer round: argmin_k ||z - e_k||^2 via the expanded form
+            //     -||z-e_k||^2 = 2·z·e_k - ||z||^2 - ||e_k||^2
+            // so the nearest neighbour is argmax of that score — identical to the
+            // old CPU exact-L2 search, done entirely on the device.
+            const int N_rvq = 8;
+            const int cb_dim = (int)m->quant[0].codebook->ne[0];   // 64
+            const int cb_size = (int)m->quant[0].codebook->ne[1];  // 1024
+            ggml_tensor* rvq_ids[N_rvq];
+            ggml_tensor* residual_g = fused;                        // [T, 1024]
+            for (int q = 0; q < N_rvq; q++) {
+                ggml_tensor* cb = m->quant[q].codebook;
+                ggml_tensor* pi_w = m->quant[q].proj_in_w;
+                ggml_tensor* po_w = m->quant[q].proj_out_w;
+                if (cb->type != GGML_TYPE_F32)  cb   = ggml_cast(ctx, cb,   GGML_TYPE_F32);
+                if (pi_w->type != GGML_TYPE_F32) pi_w = ggml_cast(ctx, pi_w, GGML_TYPE_F32);
+                if (po_w->type != GGML_TYPE_F32) po_w = ggml_cast(ctx, po_w, GGML_TYPE_F32);
+
+                // proj_in: [T,D] -> [T,cb_dim]
+                ggml_tensor* rt = ggml_cont(ctx, ggml_transpose(ctx, residual_g));   // [D, T]
+                ggml_tensor* z_T = ggml_mul_mat(ctx, pi_w, rt);                     // [cb_dim, T]
+                if (m->quant[q].proj_in_b)
+                    z_T = ggml_add(ctx, z_T, ggml_reshape_2d(ctx, m->quant[q].proj_in_b, cb_dim, 1));
+
+                // scores[k, t] = 2·z[t]·e_k - ||z[t]||^2 - ||e_k||^2
+                ggml_tensor* dot_T = ggml_mul_mat(ctx, cb, z_T);                    // [cb_size, T]
+                ggml_tensor* x2 = ggml_sum_rows(ctx, ggml_mul(ctx, z_T, z_T));      // [1, T]
+                ggml_tensor* e2 = ggml_sum_rows(ctx, ggml_mul(ctx, cb, cb));        // [1, cb_size]
+                ggml_tensor* e2r = ggml_reshape_2d(ctx, e2, cb_size, 1);            // [cb_size, 1]
+                ggml_tensor* score = ggml_sub(ctx,
+                    ggml_sub(ctx, ggml_scale(ctx, dot_T, 2.0f),
+                             ggml_repeat(ctx, x2,  dot_T)),
+                    ggml_repeat(ctx, e2r, dot_T));                                  // [cb_size, T]
+                ggml_tensor* ids = ggml_argmax(ctx, score);                         // [T] i32
+                char nm[16]; std::snprintf(nm, sizeof(nm), "rvq_ids_%d", q);
+                ggml_set_name(ids, nm);
+                ggml_set_output(ids);
+                rvq_ids[q] = ids;
+                ggml_build_forward_expand(gf, ids);
+
+                // residual -= proj_out(e[ids]): z_q [cb_dim,T], proj_out -> [D,T]
+                ggml_tensor* z_q = ggml_get_rows(ctx, cb, ids);                    // [cb_dim, T]
+                ggml_tensor* pq_T = ggml_mul_mat(ctx, po_w, z_q);                   // [D, T]
+                if (m->quant[q].proj_out_b)
+                    pq_T = ggml_add(ctx, pq_T, ggml_reshape_2d(ctx, m->quant[q].proj_out_b, (int)pq_T->ne[0], 1));
+                ggml_tensor* pq = ggml_cont(ctx, ggml_transpose(ctx, pq_T));       // [T, D]
+                residual_g = ggml_sub(ctx, residual_g, pq);
+            }
+            ggml_build_forward_expand(gf, residual_g);
 
             ggml_backend_sched_reset(m->sched);
             if (!ggml_backend_sched_alloc_graph(m->sched, gf))
@@ -658,85 +707,17 @@ bool higgs_prefill_encode(higgs_test_model* m, const float* audio, int n_samples
                 return 1;
             }
 
-            // RVQ Encode: 8-stage residual quantization on CPU
+            // Codes were computed on the GPU (rvq_ids_0..7). Read them off.
             {
-                int T_f = (int)fused->ne[0], D = (int)fused->ne[1];       // [379, 1024]
-                int cb_dim = (int)m->quant[0].codebook->ne[0];              // 64
-                int cb_size = (int)m->quant[0].codebook->ne[1];             // 1024
-                int N = 8;
-
-                // Read fused [T_f, D] from GPU
-                int n_fused = T_f * D;
-                std::vector<float> residual(n_fused);
-                ggml_backend_tensor_get(fused, residual.data(), 0, n_fused * sizeof(float));
-
-                // Read all codebooks and projection weights from GPU (may be F16 or quantized)
-                auto load_f32 = [&](ggml_tensor* t, std::vector<float>& dst) {
-                    int n = (int)ggml_nelements(t);
-                    dst.resize(n);
-                    if (t->type == GGML_TYPE_F32) {
-                        ggml_backend_tensor_get(t, dst.data(), 0, n * sizeof(float));
-                    } else if (t->type == GGML_TYPE_F16) {
-                        std::vector<ggml_fp16_t> raw(n);
-                        ggml_backend_tensor_get(t, raw.data(), 0, n * sizeof(ggml_fp16_t));
-                        ggml_fp16_to_fp32_row(raw.data(), dst.data(), n);
-                    } else {
-                        auto* traits = ggml_get_type_traits(t->type);
-                        std::vector<uint8_t> raw(ggml_nbytes(t));
-                        ggml_backend_tensor_get(t, raw.data(), 0, raw.size());
-                        traits->to_float(raw.data(), dst.data(), n);
-                    }
-                };
-
-                std::vector<float> cb_data[8], pi_w[8], pi_b[8], po_w[8], po_b[8];
-                for (int q = 0; q < N; q++) {
-                    load_f32(m->quant[q].codebook, cb_data[q]);
-                    load_f32(m->quant[q].proj_in_w, pi_w[q]);
-                    load_f32(m->quant[q].proj_in_b, pi_b[q]);
-                    load_f32(m->quant[q].proj_out_w, po_w[q]);
-                    load_f32(m->quant[q].proj_out_b, po_b[q]);
-                }
-
-                std::vector<int32_t> all_codes;
-                for (int q = 0; q < N; q++) {
-                    // proj_in: z = residual @ W.T + b  (1x1 Conv: C→cdim)
-                    std::vector<float> z(T_f * cb_dim);
-                    for (int t = 0; t < T_f; t++) {
-                        for (int c = 0; c < cb_dim; c++) {
-                            float s = pi_b[q][c];
-                            for (int d = 0; d < D; d++)
-                                s += residual[t + d * T_f] * pi_w[q][d + c * D];
-                            z[t + c * T_f] = s;
-                        }
-                    }
-
-                    // Transpose z to row-major [T, cdim] for nearest_neighbor
-                    std::vector<float> z_rm(T_f * cb_dim);
-                    for (int t = 0; t < T_f; t++)
-                        for (int c = 0; c < cb_dim; c++)
-                            z_rm[t * cb_dim + c] = z[t + c * T_f];
-
-                    std::vector<int32_t> codes_q;
-                    rvq_nearest_neighbor(z_rm.data(), T_f, cb_data[q].data(), cb_size, cb_dim, codes_q);
-                    for (int t = 0; t < T_f; t++) all_codes.push_back(codes_q[t]);
-
-                    // Residual -= proj_out(codebook[codes_q[t]]) + proj_out_b
-                    for (int t = 0; t < T_f; t++) {
-                        const float* cb_entry = cb_data[q].data() + (size_t)codes_q[t] * cb_dim;
-                        for (int d = 0; d < D; d++) {
-                            float s = po_b[q][d];
-                            for (int c = 0; c < cb_dim; c++)
-                                s += cb_entry[c] * po_w[q][c + d * cb_dim];
-                            residual[t + d * T_f] -= s;
-                        }
-                    }
-                }
-
-                // all_codes is q-major, transpose to t-major
+                const int N = 8;
+                const int T_f = (int)fused->ne[0];
                 codes.resize(N * T_f);
-                for (int t = 0; t < T_f; t++)
-                    for (int q = 0; q < N; q++)
-                        codes[t * N + q] = all_codes[q * T_f + t];
+                for (int q = 0; q < N; q++) {
+                    std::vector<int32_t> ids(T_f);
+                    ggml_backend_tensor_get(rvq_ids[q], ids.data(), 0, T_f * sizeof(int32_t));
+                    for (int t = 0; t < T_f; t++)
+                        codes[t * N + q] = ids[t];
+                }
                 T_frames = T_f;
             }
 
