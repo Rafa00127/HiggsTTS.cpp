@@ -512,6 +512,20 @@ bool higgs_prefill_encode(higgs_test_model* m, const float* audio, int n_samples
                 wavlm_hidden = ggml_add(ctx, wavlm_hidden, layer_outputs[li]);
             wavlm_hidden = ggml_scale(ctx, wavlm_hidden, 1.0f / n_enc_layers);
 
+            // config.semantic_downsample_factor (= 2): keep every other frame of the
+            // layer-mean features before the semantic encoder. WavLM runs at
+            // 16 kHz / 320 = 50 fps where the acoustic branch is 24 kHz / 960 = 25 fps, and
+            // the tokenizer decimates to match (codec.py `semantic_features[:, ::2, :]`).
+            // Without it T_sem is 2x T_ac, and the pad below "fixes" that by handing the
+            // acoustic encoder 2x the audio: 379 codes for a 7.6 s reference instead of 190,
+            // with every fused frame pairing two different moments of the audio.
+            {
+                int64_t T = wavlm_hidden->ne[1];
+                ggml_tensor *v = ggml_view_2d(ctx, wavlm_hidden, wavlm_hidden->ne[0],
+                                              (T + 1) / 2, 2 * wavlm_hidden->nb[1], 0);
+                wavlm_hidden = ggml_cont(ctx, v);   // strided view; im2col needs it dense
+            }
+
             // ── Semantic Encoder: conv → 2×Block(2×ResUnit→Conv1d) ────────────
             // Input: [C=768, T], output: [C=768, T]
             ggml_tensor *se_x = wavlm_hidden; // [768, T]
@@ -615,11 +629,16 @@ bool higgs_prefill_encode(higgs_test_model* m, const float* audio, int n_samples
             // conv2: K=3, s=1, p=1
             T_ac_pred = (T_ac_pred + 2*1 - 1*2 - 1) / 1 + 1;
 
-            int T_sem = (int)fp_out->ne[1];
+            // After the /2 decimation of the semantic branch (see above) this is the frame
+            // count the acoustic branch has to line up with.
+            int T_sem = (int)((fp_out->ne[1] + 1) / 2);
             int hop = 8 * 5 * 4 * 2 * 3;  // = 960, total stride
-            int pad_frames = T_sem - T_ac_pred;
-            int pad_L = (pad_frames / 2) * hop;
-            int pad_R = (pad_frames - pad_frames/2) * hop;
+            // encode() pads a fixed hop_length / 2 on EACH side (codec.py: self.pad =
+            // hop_length // 2), which is what adds exactly the one missing frame. Splitting
+            // pad_frames in whole frames instead left the acoustic stream half a frame out
+            // of step with the semantic one, and the RVQ then quantised mismatched pairs.
+            int pad_L = 0, pad_R = 0;
+            if (T_sem != T_ac_pred) { pad_L = hop / 2; pad_R = hop / 2; }
             std::vector<float> wav_pad(pad_L + wav3d.T + pad_R, 0.0f);
             std::memcpy(wav_pad.data() + pad_L, wav3d.samples.data(), wav3d.T * sizeof(float));
 
